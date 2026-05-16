@@ -1,0 +1,10 @@
+{
+	"id": "obsidian-note-change-email",
+	"name": "Note Change Email",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "Email a smart diff of your edits when you stop editing a note tagged with a recipient.",
+	"author": "Bob Myers",
+	"authorUrl": "https://github.com/rtm",
+	"isDesktopOnly": false
+}

@@ -1,0 +1,32 @@
+/* Note Change Email — settings tab + in-app diff preview */
+
+.note-change-email-settings .setting-item-description {
+    margin-bottom: 12px;
+}
+
+.note-change-email-settings textarea {
+    font-family: var(--font-monospace);
+    width: 100%;
+    min-height: 80px;
+}
+
+.note-change-email-preview {
+    font-family: var(--font-text);
+    line-height: 1.5;
+    white-space: pre-wrap;
+    padding: 1em;
+}
+
+.note-change-email-preview ins {
+    background: rgba(76, 175, 80, 0.25);
+    text-decoration: none;
+    border-radius: 2px;
+    padding: 0 2px;
+}
+
+.note-change-email-preview del {
+    background: rgba(244, 67, 54, 0.25);
+    text-decoration: line-through;
+    border-radius: 2px;
+    padding: 0 2px;
+}
