@@ -18,6 +18,10 @@ export default class NoteChangeEmailPlugin extends Plugin {
     settings!: NoteChangeEmailSettings;
     private snapshots = new Map<string, Snapshot>();
     private timers = new Map<string, number>();
+    // Content as of file-open, for notes without a recipient yet. If a recipient
+    // is added during the session, this becomes the snapshot, so the diff covers
+    // everything written since the note was opened.
+    private baselines = new Map<string, string>();
 
     async onload() {
         console.log('Loading Note Change Email plugin');
@@ -28,8 +32,14 @@ export default class NoteChangeEmailPlugin extends Plugin {
         this.registerEvent(
             this.app.workspace.on('file-open', (file) => {
                 if (file instanceof TFile && file.extension === 'md') {
-                    this.maybeSnapshot(file);
+                    this.onOpen(file);
                 }
+            }),
+        );
+
+        this.registerEvent(
+            this.app.metadataCache.on('changed', (file) => {
+                if (file.extension === 'md') this.onMetadataChanged(file);
             }),
         );
 
@@ -43,6 +53,10 @@ export default class NoteChangeEmailPlugin extends Plugin {
 
         this.registerEvent(
             this.app.vault.on('rename', (file, oldPath) => {
+                if (this.baselines.has(oldPath)) {
+                    this.baselines.set(file.path, this.baselines.get(oldPath)!);
+                    this.baselines.delete(oldPath);
+                }
                 if (this.snapshots.has(oldPath)) {
                     const snap = this.snapshots.get(oldPath)!;
                     this.snapshots.delete(oldPath);
@@ -58,13 +72,14 @@ export default class NoteChangeEmailPlugin extends Plugin {
 
         this.registerEvent(
             this.app.vault.on('delete', (file) => {
+                this.baselines.delete(file.path);
                 this.discardSnapshot(file.path);
             }),
         );
 
         this.app.workspace.onLayoutReady(() => {
             const active = this.app.workspace.getActiveFile();
-            if (active && active.extension === 'md') this.maybeSnapshot(active);
+            if (active && active.extension === 'md') this.onOpen(active);
         });
 
         this.addCommand({
@@ -74,7 +89,7 @@ export default class NoteChangeEmailPlugin extends Plugin {
                 const file = this.app.workspace.getActiveFile();
                 if (!file || file.extension !== 'md') return false;
                 if (!this.snapshots.has(file.path)) return false;
-                if (!checking) this.flush(file).catch(e => this.fail(e));
+                if (!checking) this.flush(file, true).catch(e => this.fail(e));
                 return true;
             },
         });
@@ -112,6 +127,7 @@ export default class NoteChangeEmailPlugin extends Plugin {
         for (const t of this.timers.values()) window.clearTimeout(t);
         this.timers.clear();
         this.snapshots.clear();
+        this.baselines.clear();
     }
 
     async loadSettings() {
@@ -128,10 +144,45 @@ export default class NoteChangeEmailPlugin extends Plugin {
         return cache.frontmatter[this.settings.recipientProperty];
     }
 
+    private async onOpen(file: TFile) {
+        if (!this.settings.enabled) return;
+        if (this.snapshots.has(file.path)) return;
+        if (this.getRecipientField(file) != null) {
+            await this.maybeSnapshot(file);
+            return;
+        }
+        if (this.baselines.has(file.path)) return;
+        try {
+            this.baselines.set(file.path, await this.app.vault.cachedRead(file));
+            if (this.baselines.size > 50) {
+                this.baselines.delete(this.baselines.keys().next().value!);
+            }
+        } catch (e) {
+            console.warn('Note Change Email: failed to read baseline', file.path, e);
+        }
+    }
+
+    // Catches a recipient added mid-session: the metadata cache updates after
+    // the modify event, so onModify alone would miss the first edit.
+    private async onMetadataChanged(file: TFile) {
+        if (!this.settings.enabled) return;
+        if (this.snapshots.has(file.path)) return;
+        if (!this.baselines.has(file.path)) return;
+        if (this.getRecipientField(file) == null) return;
+        await this.maybeSnapshot(file);
+        if (this.snapshots.has(file.path)) this.armTimer(file.path);
+    }
+
     private async maybeSnapshot(file: TFile) {
         if (!this.settings.enabled) return;
         if (this.snapshots.has(file.path)) return;
         if (this.getRecipientField(file) == null) return;
+        const baseline = this.baselines.get(file.path);
+        if (baseline !== undefined) {
+            this.baselines.delete(file.path);
+            this.snapshots.set(file.path, { content: baseline, startedAt: Date.now() });
+            return;
+        }
         try {
             const content = await this.app.vault.cachedRead(file);
             this.snapshots.set(file.path, { content, startedAt: Date.now() });
@@ -201,7 +252,7 @@ export default class NoteChangeEmailPlugin extends Plugin {
         return tpl.replace(/\{\{(\w+)\}\}/g, (_, k: string) => vars[k] ?? '');
     }
 
-    private async flush(file: TFile) {
+    private async flush(file: TFile, manual = false) {
         const snap = this.snapshots.get(file.path);
         if (!snap) {
             new Notice('No pending changes to send.');
@@ -223,6 +274,7 @@ export default class NoteChangeEmailPlugin extends Plugin {
         const stats = diffStats(diffs);
         if (stats.added === 0 && stats.removed === 0) {
             this.discardSnapshot(file.path);
+            if (manual) new Notice('Note Change Email: no changes since the note was opened; nothing sent.');
             return;
         }
 
